@@ -232,7 +232,7 @@ class PositionalEncoding(nn.Module):
 
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len).unsqueeze(1)
+        position = torch.arange(0., max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0., d_model, 2) *
                              -(math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
@@ -267,7 +267,7 @@ def make_model(src_vocab, tgt_vocab, N=6,
     # Initialize parameters with Glorot / fan_avg.
     for p in model.parameters():
         if p.dim() > 1:
-            nn.init.xavier_uniform(p)
+            nn.init.xavier_uniform_(p)
     return model
 
 #####################################################################################################################
@@ -447,8 +447,7 @@ class SimpleLossCompute:
         if self.opt is not None:
             self.opt.step()
             self.opt.optimizer.zero_grad()
-        return loss.data[0] * norm
-
+        return loss.item() * norm
 
 
 #####################################################################################################################
