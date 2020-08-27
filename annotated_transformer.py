@@ -1,9 +1,19 @@
+import copy
+import math
+import time
+
+from collections import Counter
+
+import nltk
 import numpy as np
+import spacy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math, copy, time
+from gensim.models import KeyedVectors
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pad_sequence
+from torchtext import data, datasets
 
 
 class EncoderDecoder(nn.Module):
@@ -148,18 +158,17 @@ class DecoderLayer(nn.Module):
 def subsequent_mask(size):
     """Mask out subsequent positions."""
     attn_shape = (1, size, size)
-    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
-    return torch.from_numpy(subsequent_mask) == 0
+    subsequent_mask_local = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    return torch.from_numpy(subsequent_mask_local) == 0
 
 
 def attention(query, key, value, mask=None, dropout=None):
     """Compute 'Scaled Dot Product Attention'"""
     d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1)) \
-             / math.sqrt(d_k)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
-    p_attn = F.softmax(scores, dim = -1)
+    p_attn = F.softmax(scores, dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
     return torch.matmul(p_attn, value), p_attn
@@ -241,8 +250,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + Variable(self.pe[:, :x.size(1)],
-                         requires_grad=False)
+        x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False)
         return self.dropout(x)
 
 #####################################################################################################################
@@ -257,8 +265,7 @@ def make_model(src_vocab, tgt_vocab, N=6,
     position = PositionalEncoding(d_model, dropout)
     model = EncoderDecoder(
         Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
-        Decoder(DecoderLayer(d_model, c(attn), c(attn),
-                             c(ff), dropout), N),
+        Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
         nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
         nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
         Generator(d_model, tgt_vocab))
@@ -274,22 +281,20 @@ def make_model(src_vocab, tgt_vocab, N=6,
 # Training
 #####################################################################################################################
 
-
 # Batches and Masking
 
 
 class Batch:
     """Object for holding a batch of data with mask during training."""
 
-    def __init__(self, src, trg=None, pad=0):
+    def __init__(self, src, tgt=None, pad=0):
         self.src = src
         self.src_mask = (src != pad).unsqueeze(-2)
-        if trg is not None:
-            self.trg = trg[:, :-1]
-            self.trg_y = trg[:, 1:]
-            self.trg_mask = \
-                self.make_std_mask(self.trg, pad)
-            self.ntokens = (self.trg_y != pad).data.sum()
+        if tgt is not None:
+            self.tgt = tgt[:, :-1]
+            self.tgt_y = tgt[:, 1:]
+            self.tgt_mask = self.make_std_mask(self.tgt, pad)
+            self.ntokens = (self.tgt_y != pad).data.sum()
 
     @staticmethod
     def make_std_mask(tgt, pad):
@@ -309,9 +314,9 @@ def run_epoch(data_iter, model, loss_compute):
     total_loss = 0
     tokens = 0
     for i, batch in enumerate(data_iter):
-        out = model.forward(batch.src, batch.trg,
-                            batch.src_mask, batch.trg_mask)
-        loss = loss_compute(out, batch.trg_y, batch.ntokens)
+        out = model.forward(batch.src, batch.tgt,
+                            batch.src_mask, batch.tgt_mask)
+        loss = loss_compute(out, batch.tgt_y, batch.ntokens)
         total_loss += loss
         total_tokens += batch.ntokens
         tokens += batch.ntokens
@@ -396,6 +401,7 @@ class LabelSmoothing(nn.Module):
     def __init__(self, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
         self.criterion = nn.KLDivLoss(size_average=False)
+        # self.criterion = nn.NLLLoss()    # iohavoc
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -417,6 +423,10 @@ class LabelSmoothing(nn.Module):
 #####################################################################################################################
 # Synthetic Data
 
+# batch == batch size, ie. num of sequences
+# 10 == sequence length
+# nbatches equals how many batches are there in our epoch, since this generator is called from a run_epoch()
+
 
 def data_gen(V, batch, nbatches):
     """Generate random data for a src-tgt copy task."""
@@ -426,6 +436,107 @@ def data_gen(V, batch, nbatches):
         src = Variable(data, requires_grad=False)
         tgt = Variable(data, requires_grad=False)
         yield Batch(src, tgt, 0)
+
+#####################################################################################################################
+# Real world example
+#####################################################################################################################
+
+
+def load_and_preprocess_data():
+    spacy_de = spacy.load('de')
+    spacy_en = spacy.load('en')
+
+    def tokenize_de(text):
+        return [tok.text for tok in spacy_de.tokenizer(text)]
+
+    def tokenize_en(text):
+        return [tok.text for tok in spacy_en.tokenizer(text)]
+
+    BOS_WORD = '<s>'
+    EOS_WORD = '</s>'
+    BLANK_WORD = "<blank>"
+    SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD)
+    TGT = data.Field(tokenize=tokenize_en, init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=BLANK_WORD)
+
+    MAX_LEN = 100
+    train, val, test = datasets.IWSLT.splits(exts=('.de', '.en'), fields=(SRC, TGT),
+                                             filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(vars(x)['trg']) <= MAX_LEN)
+    MIN_FREQ = 2
+    SRC.build_vocab(train.src, min_freq=MIN_FREQ)
+    TGT.build_vocab(train.tgt, min_freq=MIN_FREQ)
+    return SRC, TGT, train, val, test
+
+# data.Iterator is a torchtext dataset iterator
+
+
+class BatchingIterator(data.Iterator):
+    def create_batches(self):
+        if self.train:
+            def pool(d, random_shuffler):
+                for p in data.batch(d, self.batch_size * 100):
+                    p_batch = data.batch(sorted(p, key=self.sort_key), self.batch_size, self.batch_size_fn)
+                    for b in random_shuffler(list(p_batch)):
+                        yield b
+
+            self.batches = pool(self.data(), self.random_shuffler)
+
+        else:
+            self.batches = []
+            for b in data.batch(self.data(), self.batch_size, self.batch_size_fn):
+                self.batches.append(sorted(b, key=self.sort_key))
+
+
+def rebatch(pad_idx, batch):
+    "Fix order in torchtext to match ours"
+    src, tgt = batch.src.transpose(0, 1), batch.trg.transpose(0, 1)
+    return Batch(src, tgt, pad_idx)
+
+#####################################################################################################################
+# IOHAVOC EN-FR data
+#####################################################################################################################
+
+NUM_SAMPLES = 10000
+MAX_VOCAB_SIZE = 10000
+EMBEDDING_SIZE = 200
+DATA_PATH = 'fra.txt'
+
+
+def load_and_preprocessdata_iroro():
+    fr_w2v = KeyedVectors.load_word2vec_format('frWac_non_lem_no_postag_no_phrase_200_cbow_cut100.bin', binary=True)
+
+    # num_decoder_tokens = len(target_idx2word)
+    unknown_emb = np.random.randn(EMBEDDING_SIZE)  # if we don't have an embedding for this word!
+
+    encoder_max_seq_length = 0
+    decoder_max_seq_length = 0
+
+    src_texts_word2em = []
+    tgt_texts_word = []
+
+    lines = open(DATA_PATH, 'rt', encoding='utf8').read().split('\n')
+    for line in lines[: min(NUM_SAMPLES, len(lines)-1)]:
+        target_text, input_text = line.split('\t')
+        target_text = '\t' + target_text + '\n'
+
+        # tokenize with NLTK
+        input_words = [w for w in nltk.word_tokenize(input_text.lower())]
+        tgt_texts_word = [w for w in nltk.word_tokenize(target_text.lower())]
+
+        # embed input words
+        encoder_input_wids = []
+        for w in input_words:
+            em = unknown_emb
+            if w in fr_w2v:
+                em = fr_w2v[w]
+            encoder_input_wids.append(em)
+        src_texts_word2em.append(torch.tensor(encoder_input_wids))
+
+        encoder_max_seq_length = max(len(encoder_input_wids), encoder_max_seq_length)
+        decoder_max_seq_length = max(len(target_text), decoder_max_seq_length)
+
+    # encoder_input_data = pad_sequence(input_texts_word2em, encoder_max_seq_length)
+    encoder_input_data = pad_sequence(src_texts_word2em)
+
 
 #####################################################################################################################
 # Loss Computation
@@ -473,24 +584,53 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
 #####################################################################################################################
 # Train the simple copy task.
 
+def train_copy_task():
+    V = 11
+    criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
+    model = make_model(V, V, N=2)
+    model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
+                        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
 
-V = 11
+    for epoch in range(10):
+        model.train()
+        run_epoch(data_gen(V, 30, 20), model, SimpleLossCompute(model.generator, criterion, model_opt))
+        model.eval()
+        print(run_epoch(data_gen(V, 30, 5), model, SimpleLossCompute(model.generator, criterion, None)))
 
-criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
-model = make_model(V, V, N=2)
-model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
-                    torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
-
-for epoch in range(10):
-    model.train()
-    run_epoch(data_gen(V, 30, 20), model,
-              SimpleLossCompute(model.generator, criterion, model_opt))
     model.eval()
-    print(run_epoch(data_gen(V, 30, 5), model,
-                    SimpleLossCompute(model.generator, criterion, None)))
+    src_global = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
+    src_mask_global = Variable(torch.ones(1, 1, 10))
+    print(greedy_decode(model, src_global, src_mask_global, max_len=10, start_symbol=1))
 
 
-model.eval()
-src = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
-src_mask = Variable(torch.ones(1, 1, 10))
-print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+def train_real_world_task():
+    SRC, TGT, train, val, test = load_and_preprocess_data()
+    pad_idx = TGT.vocab.stoi["<blank>"]
+    model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
+    criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
+
+    BATCH_SIZE = 12000
+    train_iter = BatchingIterator(train, batch_size=BATCH_SIZE, device=0, repeat=False,
+                                  sort_key=lambda x: (len(x.src), len(x.trg)), batch_size_fn=batch_size_fn, train=True)
+    valid_iter = BatchingIterator(val, batch_size=BATCH_SIZE, device=0, repeat=False,
+                                  sort_key=lambda x: (len(x.src), len(x.trg)), batch_size_fn=batch_size_fn, train=False)
+
+    model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
+                        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+    for epoch in range(10):
+        model.train()
+        run_epoch((rebatch(pad_idx, b) for b in train_iter), model,
+                  SimpleLossCompute(model.generator, criterion, opt=model_opt))
+        model.eval()
+        loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter), model,
+                          SimpleLossCompute(model.generator, criterion, opt=None))
+        print(loss)
+
+
+if __name__ == "__main__":
+
+    # train_copy_task()         # original toy data copy task
+    train_real_world_task()     # real world IWSLT DE-EN NMT task using spacy
+
+    # train_real_world_iroro()  # real world FR-EN NMT using a random corpus & ntlk
