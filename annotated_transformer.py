@@ -442,9 +442,17 @@ def data_gen(V, batch, nbatches):
 #####################################################################################################################
 
 
-def load_and_preprocess_data():
-    spacy_de = spacy.load('de')
-    spacy_en = spacy.load('en')
+def load_and_preprocess_spacy_de_en():
+    spacy_de = spacy.load('de_core_news_sm',
+                          disable=['parser' 'tagger', 'entity', 'ner',
+                                   'entity_linker', 'entity_ruler', 'textcat',
+                                   'sentencizer', 'merge_noun_chunks',
+                                   'merge_entities', 'merge_subtokens'])
+    spacy_en = spacy.load('en_core_web_sm',
+                          disable=['parser' 'tagger', 'entity', 'ner',
+                                   'entity_linker', 'entity_ruler', 'textcat',
+                                   'sentencizer', 'merge_noun_chunks',
+                                   'merge_entities', 'merge_subtokens'])
 
     def tokenize_de(text):
         return [tok.text for tok in spacy_de.tokenizer(text)]
@@ -461,6 +469,8 @@ def load_and_preprocess_data():
     MAX_LEN = 100
     train, val, test = datasets.IWSLT.splits(exts=('.de', '.en'), fields=(SRC, TGT),
                                              filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(vars(x)['trg']) <= MAX_LEN)
+
+    print(vars(train[0]))
     MIN_FREQ = 2
     SRC.build_vocab(train.src, min_freq=MIN_FREQ)
     TGT.build_vocab(train.tgt, min_freq=MIN_FREQ)
@@ -495,47 +505,44 @@ def rebatch(pad_idx, batch):
 # IOHAVOC EN-FR data
 #####################################################################################################################
 
-NUM_SAMPLES = 10000
-MAX_VOCAB_SIZE = 10000
-EMBEDDING_SIZE = 200
-DATA_PATH = 'fra.txt'
+def load_and_preprocess_spacy_fr_en():
+    # tokenizer models
+    spacy_fr = spacy.load('fr_core_news_sm',
+                          disable=['parser' 'tagger', 'entity', 'ner',
+                                   'entity_linker', 'entity_ruler', 'textcat',
+                                   'sentencizer', 'merge_noun_chunks',
+                                   'merge_entities', 'merge_subtokens'])
+    spacy_en = spacy.load('en_core_web_sm',
+                          disable=['parser' 'tagger', 'entity', 'ner',
+                                   'entity_linker', 'entity_ruler', 'textcat',
+                                   'sentencizer', 'merge_noun_chunks',
+                                   'merge_entities', 'merge_subtokens'])
 
+    def tokenize_fr(text):
+        return [tok.text for tok in spacy_fr.tokenizer(text)]
 
-def load_and_preprocessdata_iroro():
-    fr_w2v = KeyedVectors.load_word2vec_format('frWac_non_lem_no_postag_no_phrase_200_cbow_cut100.bin', binary=True)
+    def tokenize_en(text):
+        return [tok.text for tok in spacy_en.tokenizer(text)]
 
-    # num_decoder_tokens = len(target_idx2word)
-    unknown_emb = np.random.randn(EMBEDDING_SIZE)  # if we don't have an embedding for this word!
+    BOS_WORD = '<s>'
+    EOS_WORD = '</s>'
+    BLANK_WORD = "<blank>"
 
-    encoder_max_seq_length = 0
-    decoder_max_seq_length = 0
+    SRC = data.Field(tokenize=tokenize_en, pad_token=BLANK_WORD)
+    TGT = data.Field(tokenize=tokenize_fr, init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=BLANK_WORD)
 
-    src_texts_word2em = []
-    tgt_texts_word = []
+    train, val, test = data.TabularDataset.splits(path='./',
+                                                  train='en-fr-audio-algorithms-train.txt',
+                                                  validation='en-fr-audio-algorithms-val.txt',
+                                                  test='en-fr-audio-algorithms-train.txt',
+                                                  format='tsv', fields=[('src', SRC), ('trg', TGT)])
+    # check an example
+    print(vars(train[0]))
 
-    lines = open(DATA_PATH, 'rt', encoding='utf8').read().split('\n')
-    for line in lines[: min(NUM_SAMPLES, len(lines)-1)]:
-        target_text, input_text = line.split('\t')
-        target_text = '\t' + target_text + '\n'
-
-        # tokenize with NLTK
-        input_words = [w for w in nltk.word_tokenize(input_text.lower())]
-        tgt_texts_word = [w for w in nltk.word_tokenize(target_text.lower())]
-
-        # embed input words
-        encoder_input_wids = []
-        for w in input_words:
-            em = unknown_emb
-            if w in fr_w2v:
-                em = fr_w2v[w]
-            encoder_input_wids.append(em)
-        src_texts_word2em.append(torch.tensor(encoder_input_wids))
-
-        encoder_max_seq_length = max(len(encoder_input_wids), encoder_max_seq_length)
-        decoder_max_seq_length = max(len(target_text), decoder_max_seq_length)
-
-    # encoder_input_data = pad_sequence(input_texts_word2em, encoder_max_seq_length)
-    encoder_input_data = pad_sequence(src_texts_word2em)
+    MIN_FREQ = 2
+    SRC.build_vocab(train.src, min_freq=MIN_FREQ)
+    TGT.build_vocab(train.tgt, min_freq=MIN_FREQ)
+    return SRC, TGT, train, val, test
 
 
 #####################################################################################################################
@@ -604,7 +611,9 @@ def train_copy_task():
 
 
 def train_real_world_task():
-    SRC, TGT, train, val, test = load_and_preprocess_data()
+    # SRC, TGT, train, val, test = load_and_preprocess_spacy_de_en()    #  IWSLT DE-EN NMT task using spacy
+    SRC, TGT, train, val, test = load_and_preprocess_spacy_fr_en()  #  FR-EN NMT task using spacy
+
     pad_idx = TGT.vocab.stoi["<blank>"]
     model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
     criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
@@ -624,13 +633,11 @@ def train_real_world_task():
                   SimpleLossCompute(model.generator, criterion, opt=model_opt))
         model.eval()
         loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter), model,
-                          SimpleLossCompute(model.generator, criterion, opt=None))
+                         SimpleLossCompute(model.generator, criterion, opt=None))
         print(loss)
 
 
 if __name__ == "__main__":
 
     # train_copy_task()         # original toy data copy task
-    train_real_world_task()     # real world IWSLT DE-EN NMT task using spacy
-
-    # train_real_world_iroro()  # real world FR-EN NMT using a random corpus & ntlk
+    train_real_world_task()     # real world FR-EN or IWSLT DE-EN NMT task using spacy
