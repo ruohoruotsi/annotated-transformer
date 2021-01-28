@@ -2,19 +2,15 @@ import copy
 import math
 import time
 
-from collections import Counter
-
-import nltk
 import numpy as np
 import spacy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gensim.models import KeyedVectors
 from torch.autograd import Variable
-from torch.nn.utils.rnn import pad_sequence
 from torchtext import data, datasets
 
+import pytorch_lightning as pl
 
 class EncoderDecoder(nn.Module):
     """
@@ -63,8 +59,8 @@ class LayerNorm(nn.Module):
     """Construct a layernorm module (See citation for details)."""
     def __init__(self, features, eps=1e-6):
         super(LayerNorm, self).__init__()
-        self.a_2 = nn.Parameter(torch.ones(features))
-        self.b_2 = nn.Parameter(torch.zeros(features))
+        self.a_2 = nn.Parameter(torch.ones(features), requires_grad=True)
+        self.b_2 = nn.Parameter(torch.zeros(features), requires_grad=True)
         self.eps = eps
 
     def forward(self, x):
@@ -300,8 +296,7 @@ class Batch:
     def make_std_mask(tgt, pad):
         """Create a mask to hide padding and future words."""
         tgt_mask = (tgt != pad).unsqueeze(-2)
-        tgt_mask = tgt_mask & Variable(
-            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
+        tgt_mask = tgt_mask & Variable(subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
         return tgt_mask
 
 # Training Loop
@@ -400,7 +395,7 @@ class LabelSmoothing(nn.Module):
 
     def __init__(self, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        self.criterion = nn.KLDivLoss(reduction='sum')
         # self.criterion = nn.NLLLoss()    # iohavoc
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
@@ -501,6 +496,7 @@ def rebatch(pad_idx, batch):
     src, tgt = batch.src.transpose(0, 1), batch.trg.transpose(0, 1)
     return Batch(src, tgt, pad_idx)
 
+
 #####################################################################################################################
 # IOHAVOC EN-FR data
 #####################################################################################################################
@@ -568,29 +564,22 @@ class SimpleLossCompute:
         return loss.item() * norm
 
 
-#####################################################################################################################
 # Greedy Decoding - This code predicts a translation using greedy decoding for simplicity.
-
-
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
     for i in range(max_len - 1):
         out = model.decode(memory, src_mask,
                            Variable(ys),
-                           Variable(subsequent_mask(ys.size(1))
-                                    .type_as(src.data)))
+                           Variable(subsequent_mask(ys.size(1)).type_as(src.data)))
         prob = model.generator(out[:, -1])
         _, next_word = torch.max(prob, dim=1)
         next_word = next_word.data[0]
-        ys = torch.cat([ys,
-                        torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+        ys = torch.cat([ys, torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
     return ys
 
 
-#####################################################################################################################
 # Train the simple copy task.
-
 def train_copy_task():
     V = 11
     criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
@@ -608,6 +597,16 @@ def train_copy_task():
     src_global = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
     src_mask_global = Variable(torch.ones(1, 1, 10))
     print(greedy_decode(model, src_global, src_mask_global, max_len=10, start_symbol=1))
+
+#####################################################################################################################
+#####################################################################################################################
+
+# class AnnotatedTransformer(pl.LightningModule):
+#
+#     def __init__(self):
+#         super(AnnotatedTransformer, self).__init__()
+#
+#
 
 
 def train_real_world_task():
@@ -639,5 +638,14 @@ def train_real_world_task():
 
 if __name__ == "__main__":
 
+    # Old PyTorch code
     # train_copy_task()         # original toy data copy task
     train_real_world_task()     # real world FR-EN or IWSLT DE-EN NMT task using spacy
+
+    # New PyTorch Lightning
+    # dataset = MNIST(os.getcwd(), download=True, transform=transforms.ToTensor())
+    # train, val = random_split(dataset, [55000, 5000])
+    #
+    # transfomer = LitAutoEncoder()
+    # trainer = pl.Trainer()
+    # trainer.fit(transfomer, DataLoader(train), DataLoader(val))
