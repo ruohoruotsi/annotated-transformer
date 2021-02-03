@@ -1,6 +1,7 @@
 import copy
 import math
 import time
+from typing import Optional
 
 import numpy as np
 import spacy
@@ -11,6 +12,8 @@ from torch.autograd import Variable
 from torchtext import data, datasets
 
 import pytorch_lightning as pl
+from torch.utils.data import DataLoader, random_split
+
 
 class EncoderDecoder(nn.Module):
     """
@@ -40,12 +43,14 @@ class EncoderDecoder(nn.Module):
 
 class Generator(nn.Module):
     """Define standard linear + softmax generation step."""
+
     def __init__(self, d_model, vocab):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
 
     def forward(self, x):
         return F.log_softmax(self.proj(x), dim=-1)
+
 
 #####################################################################################################################
 
@@ -57,6 +62,7 @@ def clones(module, N):
 
 class LayerNorm(nn.Module):
     """Construct a layernorm module (See citation for details)."""
+
     def __init__(self, features, eps=1e-6):
         super(LayerNorm, self).__init__()
         self.a_2 = nn.Parameter(torch.ones(features), requires_grad=True)
@@ -74,6 +80,7 @@ class SublayerConnection(nn.Module):
     A residual connection followed by a layer norm.
     Note for code simplicity the norm is first as opposed to last.
     """
+
     def __init__(self, size, dropout):
         super(SublayerConnection, self).__init__()
         self.norm = LayerNorm(size)
@@ -82,6 +89,7 @@ class SublayerConnection(nn.Module):
     def forward(self, x, sublayer):
         "Apply residual connection to any sublayer with the same size."
         return x + self.dropout(sublayer(self.norm(x)))
+
 
 #####################################################################################################################
 
@@ -103,6 +111,7 @@ class Encoder(nn.Module):
 
 class EncoderLayer(nn.Module):
     """Encoder is made up of self-attn and feed forward (defined below)"""
+
     def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
@@ -147,6 +156,7 @@ class DecoderLayer(nn.Module):
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
         x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
         return self.sublayer[2](x, self.feed_forward)
+
 
 #####################################################################################################################
 
@@ -203,11 +213,13 @@ class MultiHeadedAttention(nn.Module):
             .view(nbatches, -1, self.h * self.d_k)
         return self.linears[-1](x)
 
+
 #####################################################################################################################
 
 
 class PositionwiseFeedForward(nn.Module):
     """Implements FFN equation."""
+
     def __init__(self, d_model, d_ff, dropout=0.1):
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
@@ -249,11 +261,11 @@ class PositionalEncoding(nn.Module):
         x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False)
         return self.dropout(x)
 
+
 #####################################################################################################################
 
 
-def make_model(src_vocab, tgt_vocab, N=6,
-               d_model=512, d_ff=2048, h=8, dropout=0.1):
+def make_model(src_vocab, tgt_vocab, N=6, d_model=512, d_ff=2048, h=8, dropout=0.1):
     """Helper: Construct a model from hyperparameters."""
     c = copy.deepcopy
     attn = MultiHeadedAttention(h, d_model)
@@ -272,6 +284,7 @@ def make_model(src_vocab, tgt_vocab, N=6,
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
     return model
+
 
 #####################################################################################################################
 # Training
@@ -299,6 +312,7 @@ class Batch:
         tgt_mask = tgt_mask & Variable(subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
         return tgt_mask
 
+
 # Training Loop
 
 
@@ -318,7 +332,7 @@ def run_epoch(data_iter, model, loss_compute):
         if i % 50 == 1:
             elapsed = time.time() - start
             print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
-                    (i, loss / batch.ntokens, tokens / elapsed))
+                  (i, loss / batch.ntokens, tokens / elapsed))
             start = time.time()
             tokens = 0
     return total_loss / total_tokens
@@ -333,8 +347,8 @@ def batch_size_fn(new, count, sofar):
     if count == 1:
         max_src_in_batch = 0
         max_tgt_in_batch = 0
-    max_src_in_batch = max(max_src_in_batch,  len(new.src))
-    max_tgt_in_batch = max(max_tgt_in_batch,  len(new.trg) + 2)
+    max_src_in_batch = max(max_src_in_batch, len(new.src))
+    max_tgt_in_batch = max(max_tgt_in_batch, len(new.trg) + 2)
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements, tgt_elements)
@@ -381,6 +395,7 @@ opts = [NoamOpt(512, 1, 4000, None),
         NoamOpt(512, 1, 8000, None),
         NoamOpt(256, 1, 4000, None)]
 
+
 #####################################################################################################################
 # Regularization
 #####################################################################################################################
@@ -415,6 +430,7 @@ class LabelSmoothing(nn.Module):
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
 
+
 #####################################################################################################################
 # Synthetic Data
 
@@ -431,6 +447,7 @@ def data_gen(V, batch, nbatches):
         src = Variable(data, requires_grad=False)
         tgt = Variable(data, requires_grad=False)
         yield Batch(src, tgt, 0)
+
 
 #####################################################################################################################
 # Real world example
@@ -463,13 +480,15 @@ def load_and_preprocess_spacy_de_en():
 
     MAX_LEN = 100
     train, val, test = datasets.IWSLT.splits(exts=('.de', '.en'), fields=(SRC, TGT),
-                                             filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(vars(x)['trg']) <= MAX_LEN)
+                                             filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(
+                                                 vars(x)['trg']) <= MAX_LEN)
 
     print(vars(train[0]))
     MIN_FREQ = 2
     SRC.build_vocab(train.src, min_freq=MIN_FREQ)
     TGT.build_vocab(train.tgt, min_freq=MIN_FREQ)
     return SRC, TGT, train, val, test
+
 
 # data.Iterator is a torchtext dataset iterator
 
@@ -555,8 +574,7 @@ class SimpleLossCompute:
 
     def __call__(self, x, y, norm):
         x = self.generator(x)
-        loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
-                              y.contiguous().view(-1)) / norm
+        loss = self.criterion(x.contiguous().view(-1, x.size(-1)), y.contiguous().view(-1)) / norm
         loss.backward()
         if self.opt is not None:
             self.opt.step()
@@ -598,20 +616,105 @@ def train_copy_task():
     src_mask_global = Variable(torch.ones(1, 1, 10))
     print(greedy_decode(model, src_global, src_mask_global, max_len=10, start_symbol=1))
 
+
 #####################################################################################################################
+#####################################################################################################################
+# PyTorch Lightning implementation of the FR-EN realwork translation task
 #####################################################################################################################
 
-# class AnnotatedTransformer(pl.LightningModule):
+class AnnotatedTransformer(pl.LightningModule):
+
+    def __init__(self, batch_size, N=6, d_model=512, d_ff=2048, h=8, dropout=0.1):
+        super(AnnotatedTransformer, self).__init__()
+        # make model
+        c = copy.deepcopy
+        attn = MultiHeadedAttention(h, d_model)
+        ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+        position = PositionalEncoding(d_model, dropout)
+        self.batch_size = batch_size
+
+        # Setup data: FR-EN NMT task using spacy
+        self.SRC, self.TGT, self.train_dataset, self.val_dataset, self.test = load_and_preprocess_spacy_fr_en()
+        self.train_iter = BatchingIterator(self.train_dataset, batch_size=self.batch_size, device=0, repeat=False,
+                                           sort_key=lambda x: (len(x.src), len(x.trg)), batch_size_fn=batch_size_fn,
+                                           train=True)
+        self.valid_iter = BatchingIterator(self.val_dataset, batch_size=self.batch_size, device=0, repeat=False,
+                                           sort_key=lambda x: (len(x.src), len(x.trg)), batch_size_fn=batch_size_fn,
+                                           train=False)
+        self.pad_idx = self.TGT.vocab.stoi["<blank>"]
+
+        # initialize model data structures
+        self.encoder_decoder = EncoderDecoder(
+            Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+            Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
+            nn.Sequential(Embeddings(d_model, len(self.SRC.vocab)), c(position)),
+            nn.Sequential(Embeddings(d_model, len(self.TGT.vocab)), c(position)),
+            Generator(d_model, len(self.TGT.vocab)))
+
+        # This was important from their code.
+        # Initialize parameters with Glorot / fan_avg.
+        for p in self.encoder_decoder.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+        self.optimizer = NoamOpt(self.encoder_decoder.src_embed[0].d_model, 1, 2000,
+                                 torch.optim.Adam(self.encoder_decoder.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+        self.simple_loss_function = self.simple_loss()
+
+    def forward(self, x):
+        # in lightning, forward defines the prediction/inference actions
+        return self.encoder_decoder(x.src, x.tgt, x.src_mask, x.tgt_mask)
+
+    def simple_loss(self):
+        criterion = LabelSmoothing(size=len(self.TGT.vocab), padding_idx=self.pad_idx, smoothing=0.1)
+        return SimpleLossCompute(self.encoder_decoder.generator, criterion, opt=self.optimizer)
+
+    def training_step(self, batch, batch_idx):
+        # # training_step defined the train loop. It is independent of forward
+        fixed_batch = rebatch(self.pad_idx, batch)
+        out = self.forward(fixed_batch)
+        loss = self.simple_loss_function(out, fixed_batch.tgt_y, fixed_batch.ntokens)
+        # self.log('train_loss', loss)
+        self.log("train_loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+
+        # return loss
+
+    def configure_optimizers(self):
+        pass  # manual optimization requires this to exist but do nothing ¯\_(ツ)_/¯
+
+    def train_dataloader(self):
+        return self.train_iter
+
+    def val_dataloader(self):
+        return self.valid_iter
+
+# Unused because we are using TorchText Iterators
+# class AnnotatedTransformerDataModule(pl.LightningDataModule):
 #
-#     def __init__(self):
-#         super(AnnotatedTransformer, self).__init__()
+#     def __init__(self, batch_size):
+#         super().__init__()
+#         self.batch_size = batch_size
 #
+#     def setup(self, stage: Optional[str] = None):
+#         # transforms for images
+#         self.pad_idx = self.TGT.vocab.stoi["<blank>"]
+#         SRC = data.Field(tokenize=tokenize_en, pad_token=BLANK_WORD)
+#         TGT = data.Field(tokenize=tokenize_fr, init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=BLANK_WORD)
+#         train, val, test = data.TabularDataset.splits(path='./')
 #
+#     def train_dataloader(self):
+#         return DataLoader(self.train, batch_size=self.batch_size)
+#
+#     def val_dataloader(self):
+#         return DataLoader(self.val, batch_size=self.batch_size)
+#
+#     def test_dataloader(self):
+#         return DataLoader(self.test, batch_size=self.batch_size)
 
 
 def train_real_world_task():
     # SRC, TGT, train, val, test = load_and_preprocess_spacy_de_en()    #  IWSLT DE-EN NMT task using spacy
-    SRC, TGT, train, val, test = load_and_preprocess_spacy_fr_en()  #  FR-EN NMT task using spacy
+    SRC, TGT, train, val, test = load_and_preprocess_spacy_fr_en()  # FR-EN NMT task using spacy
 
     pad_idx = TGT.vocab.stoi["<blank>"]
     model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
@@ -624,12 +727,15 @@ def train_real_world_task():
                                   sort_key=lambda x: (len(x.src), len(x.trg)), batch_size_fn=batch_size_fn, train=False)
 
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
-                        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+                       torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
 
     for epoch in range(10):
+        # train mode
         model.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter), model,
                   SimpleLossCompute(model.generator, criterion, opt=model_opt))
+
+        # validate mode
         model.eval()
         loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter), model,
                          SimpleLossCompute(model.generator, criterion, opt=None))
@@ -637,15 +743,13 @@ def train_real_world_task():
 
 
 if __name__ == "__main__":
-
     # Old PyTorch code
     # train_copy_task()         # original toy data copy task
-    train_real_world_task()     # real world FR-EN or IWSLT DE-EN NMT task using spacy
+    # train_real_world_task()     # real world FR-EN or IWSLT DE-EN NMT task using spacy
 
     # New PyTorch Lightning
-    # dataset = MNIST(os.getcwd(), download=True, transform=transforms.ToTensor())
-    # train, val = random_split(dataset, [55000, 5000])
-    #
-    # transfomer = LitAutoEncoder()
-    # trainer = pl.Trainer()
-    # trainer.fit(transfomer, DataLoader(train), DataLoader(val))
+    # fr_en_task = AnnotatedTransformerDataModule(batch_size=12000)
+
+    transfomer = AnnotatedTransformer(batch_size=12000)
+    trainer = pl.Trainer(automatic_optimization=False)
+    trainer.fit(transfomer)
