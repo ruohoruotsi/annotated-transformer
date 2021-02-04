@@ -657,8 +657,8 @@ class AnnotatedTransformer(pl.LightningModule):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-        self.optimizer = NoamOpt(self.encoder_decoder.src_embed[0].d_model, 1, 2000,
-                                 torch.optim.Adam(self.encoder_decoder.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+        # self.optimizer = NoamOpt(self.encoder_decoder.src_embed[0].d_model, 1, 2000,
+        #                          torch.optim.Adam(self.encoder_decoder.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
         self.criterion = criterion = LabelSmoothing(size=len(self.TGT.vocab), padding_idx=self.pad_idx, smoothing=0.1)
 
     def forward(self, x):
@@ -673,13 +673,21 @@ class AnnotatedTransformer(pl.LightningModule):
 
         x = self.encoder_decoder.generator(out)
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)), fixed_batch.tgt_y.contiguous().view(-1)) / norm
-        loss.backward()
-        self.optimizer.step()
-        self.optimizer.optimizer.zero_grad()
-        self.log("train_loss", loss.item() * norm, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        # loss.backward()
+        # self.optimizer.step()
+        # self.optimizer.optimizer.zero_grad()
+        # self.log("train_loss", loss.item() * norm, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        return dict(
+            loss=loss,
+            log=dict(
+                train_loss=loss
+            )
+        )
 
     def configure_optimizers(self):
-        pass  # manual optimization requires this to exist but do nothing ¯\_(ツ)_/¯
+        # pass  # manual optimization requires this to exist but do nothing ¯\_(ツ)_/¯
+        return torch.optim.Adam(self.encoder_decoder.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9)
 
     def train_dataloader(self):
         return self.train_iter
@@ -750,5 +758,6 @@ if __name__ == "__main__":
     # fr_en_task = AnnotatedTransformerDataModule(batch_size=12000)
 
     transfomer = AnnotatedTransformer(batch_size=1200)
-    trainer = pl.Trainer(automatic_optimization=False)
+    # trainer = pl.Trainer(automatic_optimization=False)
+    trainer = pl.Trainer()
     trainer.fit(transfomer)
