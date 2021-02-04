@@ -659,25 +659,24 @@ class AnnotatedTransformer(pl.LightningModule):
 
         self.optimizer = NoamOpt(self.encoder_decoder.src_embed[0].d_model, 1, 2000,
                                  torch.optim.Adam(self.encoder_decoder.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
-        self.simple_loss_function = self.simple_loss()
+        self.criterion = criterion = LabelSmoothing(size=len(self.TGT.vocab), padding_idx=self.pad_idx, smoothing=0.1)
 
     def forward(self, x):
         # in lightning, forward defines the prediction/inference actions
         return self.encoder_decoder(x.src, x.tgt, x.src_mask, x.tgt_mask)
 
-    def simple_loss(self):
-        criterion = LabelSmoothing(size=len(self.TGT.vocab), padding_idx=self.pad_idx, smoothing=0.1)
-        return SimpleLossCompute(self.encoder_decoder.generator, criterion, opt=self.optimizer)
-
     def training_step(self, batch, batch_idx):
-        # # training_step defined the train loop. It is independent of forward
+        # training_step defined the train loop. It is independent of forward
         fixed_batch = rebatch(self.pad_idx, batch)
         out = self.forward(fixed_batch)
-        loss = self.simple_loss_function(out, fixed_batch.tgt_y, fixed_batch.ntokens)
-        # self.log('train_loss', loss)
-        self.log("train_loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        norm = fixed_batch.ntokens
 
-        # return loss
+        x = self.encoder_decoder.generator(out)
+        loss = self.criterion(x.contiguous().view(-1, x.size(-1)), fixed_batch.tgt_y.contiguous().view(-1)) / norm
+        loss.backward()
+        self.optimizer.step()
+        self.optimizer.optimizer.zero_grad()
+        self.log("train_loss", loss.item() * norm, prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
     def configure_optimizers(self):
         pass  # manual optimization requires this to exist but do nothing ¯\_(ツ)_/¯
@@ -750,6 +749,6 @@ if __name__ == "__main__":
     # New PyTorch Lightning
     # fr_en_task = AnnotatedTransformerDataModule(batch_size=12000)
 
-    transfomer = AnnotatedTransformer(batch_size=12000)
+    transfomer = AnnotatedTransformer(batch_size=1200)
     trainer = pl.Trainer(automatic_optimization=False)
     trainer.fit(transfomer)
